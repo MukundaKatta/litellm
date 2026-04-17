@@ -55,6 +55,7 @@ from litellm.constants import (
     LITELLM_UI_ALLOW_HEADERS,
     LITELLM_UI_SESSION_DURATION,
     DAILY_TAG_SPEND_BATCH_MULTIPLIER,
+    SPEND_COUNTER_REDIS_TTL_SECONDS,
 )
 from litellm.litellm_core_utils.litellm_logging import (
     _init_custom_logger_compatible_class,
@@ -1845,6 +1846,7 @@ async def increment_spend_counters(
                     await spend_counter_cache.async_increment_cache(
                         key=f"spend:key:{hashed_token}:window:{duration}",
                         value=response_cost,
+                        ttl=SPEND_COUNTER_REDIS_TTL_SECONDS,
                     )
 
     if team_id is not None:
@@ -1872,6 +1874,7 @@ async def increment_spend_counters(
                     await spend_counter_cache.async_increment_cache(
                         key=f"spend:team:{team_id}:window:{duration}",
                         value=response_cost,
+                        ttl=SPEND_COUNTER_REDIS_TTL_SECONDS,
                     )
 
     if user_id is not None and team_id is not None:
@@ -1912,10 +1915,14 @@ async def _init_and_increment_spend_counter(
                 base_spend = getattr(source, "spend", 0.0) or 0.0
         if base_spend > 0:
             await spend_counter_cache.async_increment_cache(
-                key=counter_key, value=base_spend
+                key=counter_key,
+                value=base_spend,
+                ttl=SPEND_COUNTER_REDIS_TTL_SECONDS,
             )
 
-    await spend_counter_cache.async_increment_cache(key=counter_key, value=increment)
+    await spend_counter_cache.async_increment_cache(
+        key=counter_key, value=increment, ttl=SPEND_COUNTER_REDIS_TTL_SECONDS
+    )
 
 
 async def update_cache(  # noqa: PLR0915
