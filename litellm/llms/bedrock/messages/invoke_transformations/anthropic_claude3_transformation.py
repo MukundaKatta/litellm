@@ -59,6 +59,30 @@ class AmazonAnthropicClaudeMessagesConfig(
 
     DEFAULT_BEDROCK_ANTHROPIC_API_VERSION = "bedrock-2023-05-31"
 
+    # Allowlist of top-level request body fields that Bedrock Invoke's Anthropic
+    # Messages API accepts. Anything else (Anthropic-only extensions like
+    # context_management/output_config/speed/mcp_servers, internal fields like
+    # litellm_metadata, and any future Anthropic additions Claude Code may send)
+    # is filtered out before the request is forwarded, preventing
+    # "Extra inputs are not permitted" 400s.
+    BEDROCK_INVOKE_ALLOWED_TOP_LEVEL_FIELDS = frozenset(
+        {
+            "anthropic_version",
+            "anthropic_beta",
+            "messages",
+            "system",
+            "max_tokens",
+            "stop_sequences",
+            "temperature",
+            "top_p",
+            "top_k",
+            "tools",
+            "tool_choice",
+            "thinking",
+            "metadata",
+        }
+    )
+
     def __init__(self, **kwargs):
         BaseAnthropicMessagesConfig.__init__(self, **kwargs)
         AmazonInvokeConfig.__init__(self, **kwargs)
@@ -500,10 +524,6 @@ class AmazonAnthropicClaudeMessagesConfig(
                 anthropic_messages_request=anthropic_messages_request,
             )
 
-        # 5b. Strip `output_config` — Bedrock Invoke doesn't support it
-        # Fixes: https://github.com/BerriAI/litellm/issues/22797
-        anthropic_messages_request.pop("output_config", None)
-
         # 5a. Remove `custom` field from tools (Bedrock doesn't support it)
         # Claude Code sends `custom: {defer_loading: true}` on tool definitions,
         # which causes Bedrock to reject the request with "Extra inputs are not permitted"
@@ -557,6 +577,20 @@ class AmazonAnthropicClaudeMessagesConfig(
         filtered_betas = sorted(user_beta_set.union(set(filtered_auto_betas)))
         if filtered_betas:
             anthropic_messages_request["anthropic_beta"] = filtered_betas
+
+        # 7. Final safety net: filter top-level fields to the Bedrock Invoke allowlist.
+        # Catches Anthropic-only extensions (context_management, output_config, speed,
+        # mcp_servers, ...) and any future additions Claude Code may start sending.
+        allowed = self.BEDROCK_INVOKE_ALLOWED_TOP_LEVEL_FIELDS
+        stripped = sorted(k for k in anthropic_messages_request if k not in allowed)
+        if stripped:
+            verbose_logger.debug(
+                "Bedrock Invoke: stripping unsupported top-level request fields: %s",
+                stripped,
+            )
+        anthropic_messages_request = {
+            k: v for k, v in anthropic_messages_request.items() if k in allowed
+        }
 
         return anthropic_messages_request
 

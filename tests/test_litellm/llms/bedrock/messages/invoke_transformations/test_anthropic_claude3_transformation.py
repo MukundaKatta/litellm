@@ -579,6 +579,90 @@ def test_bedrock_messages_strips_output_config_with_output_format():
     assert "output_format" not in result
 
 
+def test_bedrock_messages_strips_context_management():
+    """
+    Ensure context_management is stripped from the request before sending to
+    Bedrock Invoke, which doesn't support this Anthropic-specific parameter.
+
+    Claude Code sends context_management on every request; leaving it in the body
+    causes a 400 "context_management: Extra inputs are not permitted" from Bedrock.
+    """
+    from litellm.types.router import GenericLiteLLMParams
+
+    cfg = AmazonAnthropicClaudeMessagesConfig()
+    messages = [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}]
+    optional_params = {
+        "max_tokens": 4096,
+        "context_management": {
+            "edits": [{"type": "clear_thinking_20251015", "keep": "all"}]
+        },
+    }
+
+    result = cfg.transform_anthropic_messages_request(
+        model="anthropic.claude-3-haiku-20240307-v1:0",
+        messages=messages,
+        anthropic_messages_optional_request_params=optional_params,
+        litellm_params=GenericLiteLLMParams(),
+        headers={},
+    )
+
+    assert (
+        "context_management" not in result
+    ), "context_management should be stripped — Bedrock Invoke rejects it"
+    assert result.get("max_tokens") == 4096
+
+
+def test_bedrock_messages_allowlist_filters_anthropic_only_fields():
+    """
+    Bedrock Invoke rejects any top-level body field it doesn't recognize with
+    "Extra inputs are not permitted". Defend against that by filtering the
+    outgoing body to a Bedrock-supported allowlist — catches Anthropic-only
+    extensions (speed, mcp_servers, container, ...) and any future additions
+    Claude Code starts sending before we learn about them.
+    """
+    from litellm.types.router import GenericLiteLLMParams
+
+    cfg = AmazonAnthropicClaudeMessagesConfig()
+    messages = [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}]
+    optional_params = {
+        "max_tokens": 4096,
+        "temperature": 0.5,
+        "speed": "fast",
+        "mcp_servers": [{"type": "url", "url": "https://example.com"}],
+        "container": {"skills": []},
+        "inference_geo": "us",
+        "output_config": {"effort": "low"},
+        "context_management": {"edits": []},
+    }
+
+    result = cfg.transform_anthropic_messages_request(
+        model="anthropic.claude-3-haiku-20240307-v1:0",
+        messages=messages,
+        anthropic_messages_optional_request_params=optional_params,
+        litellm_params=GenericLiteLLMParams(),
+        headers={},
+    )
+
+    for bad in (
+        "speed",
+        "mcp_servers",
+        "container",
+        "inference_geo",
+        "output_config",
+        "context_management",
+        "model",
+        "stream",
+    ):
+        assert bad not in result, f"{bad} should be stripped by the allowlist"
+
+    # Supported fields pass through.
+    assert result["max_tokens"] == 4096
+    assert result["temperature"] == 0.5
+    assert result["anthropic_version"] == cfg.DEFAULT_BEDROCK_ANTHROPIC_API_VERSION
+    # Every surviving key is in the allowlist.
+    assert set(result).issubset(cfg.BEDROCK_INVOKE_ALLOWED_TOP_LEVEL_FIELDS)
+
+
 @pytest.mark.asyncio
 async def test_promote_message_stop_usage_preserves_message_delta_output_tokens():
     """
